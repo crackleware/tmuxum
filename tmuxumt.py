@@ -8,12 +8,14 @@ pip install --user libtmux psutil
 set-hook -g after-new-window "rename-window 'win#{window_id}'"
 
 * add to .zshrc:
+setopt HIST_IGNORE_SPACE
 save_last_tmux_pane_cmd () { [ "$TMUX_PANE" = "" ] && return; local d=/tmp/tmux-pane-cmds; mkdir -p $d; echo "$1" > $d/$TMUX_PANE; }
 preexec_functions+=(save_last_tmux_pane_cmd)
 '''
 
 import sys
 import os
+import subprocess
 import datetime
 import time
 from optparse import OptionParser
@@ -29,17 +31,18 @@ parser.add_option("-d", "--delay", dest="delay", default=0.0, help='delay betwee
 
 if not args:
     print('usage:')
-    print('tumuxum.py save FILENAME SESSION')
-    print('tumuxum.py load FILENAME SESSION')
+    print('tumuxum.py save FILENAME [SESSION]')
+    print('tumuxum.py load FILENAME [SESSION]')
 
 elif args[0] == 'save':
-    fn, sessname = args[1:3]
+    fn = args[1]
+    sessname = args[2] if len(args) >= 3 else None
 
     server = libtmux.Server()
     session = server.find_where({'session_name': sessname})
 
     ts = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
-    sessdir = os.environ['HOME']+f'/tmp/tmuxux/sessions/{sessname}/{ts}'
+    sessdir = os.environ['HOME']+f'/.tmuxumt/sessions/{sessname}/{ts}'
     os.makedirs(sessdir, exist_ok=True)
 
     def get_child(child, pane):
@@ -83,7 +86,7 @@ elif args[0] == 'save':
             proc = psutil.Process(int(p.pid))
             cmdfn = f'/tmp/tmux-pane-cmds/{p.id}'
             command = open(cmdfn).read().strip() if os.path.exists(cmdfn) else None
-            if command and len([c for c in proc.children() if c.status() != 'stopped']) == 1 \
+            if command and len([c for c in proc.children() if c.status() != 'stopped']) \
                 and not command.startswith('vim ') \
                 and not any(c for c in proc.children() if c.status() != 'stopped' and c.name() == 'vim'):
                 pd.update({
@@ -99,6 +102,8 @@ elif args[0] == 'save':
                 pd.update({
                     'children': {c.pid: get_child(c, p) for c in proc.children()},
                 })
+                if command and not command.startswith('cd ') and sessdir not in command:
+                    pd['last_command'] = command
                 print(f'  * saving pane at {proc.cwd()}: {pd["cmdline"]}')
         else:
             print(f'  * saving pane: EMPTY')
@@ -126,20 +131,24 @@ elif args[0] == 'save':
         'session_name': sessname,
         'windows': [get_window(w) for w in session.list_windows()],
     }
-    with open(fn, 'w+') as f: yaml.dump(d, f)
+    with open(fn+'.tmp', 'w+') as f: yaml.dump(d, f)
+    os.rename(fn+'.tmp', fn)
 
 elif args[0] == 'load':
-    fn, sessname = args[1:3]
-    if len(args) == 2:
-        fn = args[1]
-        sessname = None
-    else:
-        fn, sessname = args[1:3]
+    fn = args[1]
+    sessname = args[2] if len(args) >= 3 else None
 
     d = yaml.load(open(fn), Loader=yaml.FullLoader)
     if not sessname: sessname = d['session_name']
 
-    server = libtmux.Server()
+    try:
+        server = libtmux.Server()
+        server.list_sessions()
+    except libtmux.exc.LibTmuxException:
+        subprocess.check_call(['tmux', 'new-session', '-d', '-s', sessname])
+        server = libtmux.Server()
+        server.list_sessions()
+
     session = server.find_where({'session_name': sessname})
     if not session:
         session = server.new_session(sessname)
@@ -149,9 +158,7 @@ elif args[0] == 'load':
 
     def load_pane(pane, pd):
         if 'scrollback' in pd:
-            pane.send_keys(f' cat {pd["scrollback"]}', enter=False, suppress_history=False, literal=True)
-            pane.clear()
-            pane.send_keys(f'', enter=True, suppress_history=False, literal=True)
+            pane.send_keys(f' cat {pd["scrollback"]}', enter=True, suppress_history=False, literal=True)
 
         def handle_cmd(cmd):
             pane.send_keys(cmd, enter=opts.execute_commands, suppress_history=False, literal=True)
@@ -175,20 +182,28 @@ elif args[0] == 'load':
                     else:
                         handle_cmd(cmd)
                     break
+            else:
+                if pd["cwd"]:
+                    pane.send_keys(f' cd {pd["cwd"]}', enter=True, suppress_history=False, literal=True)
+                if 'last_command' in pd:
+                    pane.send_keys(f'  {pd["last_command"]}', enter=False, suppress_history=False, literal=True)
 
     def load_window(wd):
-        w = session.new_window(wd['name'], attach=False) # window_index=...
+        w = session.new_window(attach=False) # window_index=...
+        w.rename_window(wd['name'])
         p = w.panes[0]
+        active_pane = None
         for pd in wd['panes']:
             print(f'  * creating pane: {pd.get("command") or pd["cmdline"]}')
             p = p.split_window()
+            w.cmd('select-layout', '-E')
             load_pane(p, pd)
             if pd['active']:
                 active_pane = p
             time.sleep(opts.delay)
         w.panes[0].cmd('kill-pane')
         w.select_layout(wd['layout'])
-        active_pane.select_pane()
+        if active_pane: active_pane.select_pane()
         return w
 
     active_win = None
