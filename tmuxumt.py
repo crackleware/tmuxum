@@ -1,17 +1,14 @@
 #!/usr/bin/env python3
 
-'''
+try:
+    import libtmux
+    import psutil
+except ImportError:
+    print('''\
 * requires:
 pip install --user libtmux psutil
-
-* add to .tmux.conf:
-set-hook -g after-new-window "rename-window 'win#{window_id}'"
-
-* add to .zshrc:
-setopt HIST_IGNORE_SPACE
-save_last_tmux_pane_cmd () { [ "$TMUX_PANE" = "" ] && return; local d=/tmp/tmux-pane-cmds; mkdir -p $d; echo "$1" > $d/$TMUX_PANE; }
-preexec_functions+=(save_last_tmux_pane_cmd)
-'''
+''')
+    raise
 
 import sys
 import os
@@ -20,12 +17,29 @@ import datetime
 import time
 import optparse
 import glob
-
 import yaml
-import libtmux
-import psutil
 
-parser = optparse.OptionParser("usage: %prog [options] (save|load)")
+parser = optparse.OptionParser('%prog [options] (save|load)', epilog='''
+TmuxumT session manager saves and loads:
+
+- window names and order
+- layout of panes in windows
+- active command which is running in pane
+- last executed command in pane
+- current directory for pane
+- entire scrollback for pane
+- vim session for pane using :mksession command
+
+Only missing windows are loaded.
+
+* add to .tmux.conf:
+set-hook -g after-new-window "rename-window 'win#{window_id}'"
+
+* add to .zshrc:
+setopt HIST_IGNORE_SPACE
+save_last_tmux_pane_cmd () { [ "$TMUX_PANE" = "" ] && return; local d=/tmp/tmux-pane-cmds; mkdir -p $d; echo "$1" > $d/$TMUX_PANE; }
+preexec_functions+=(save_last_tmux_pane_cmd)''')
+parser.format_epilog = lambda formatter: parser.epilog
 parser.add_option("-s", "--session", dest="session", help='name of the session to save (default is active session)')
 parser.add_option("-f", "--file", dest="filename", help='load session from/save session to FILE', metavar='FILE')
 parser.add_option("-t", "--sessions-directory", dest="sess_root_dir", default=os.environ['HOME']+'/.tmuxumt/sessions', help='write session related files under DIR', metavar='DIR')
@@ -33,11 +47,12 @@ parser.add_option("-x", "--execute", dest="execute_commands", default=False, hel
 parser.add_option("-d", "--delay", dest="delay", default=0.0, help='delay between creating panes (in seconds)', type='float')
 (opts, args) = parser.parse_args()
 
+
 def get_session_name():
     return opts.session if opts.session else server.cmd('display-message', '-p', '#S').stdout[0]
 
 if not args:
-    parser.print_usage()
+    parser.print_help()
 
 elif args[0] == 'save':
     server = libtmux.Server()
