@@ -18,31 +18,36 @@ import os
 import subprocess
 import datetime
 import time
-from optparse import OptionParser
+import optparse
+import glob
 
 import yaml
 import libtmux
 import psutil
 
-parser = OptionParser()
+parser = optparse.OptionParser("usage: %prog [options] (save|load)")
+parser.add_option("-s", "--session", dest="session", help='name of the session to save (default is active session)')
+parser.add_option("-f", "--file", dest="filename", help='load session from/save session to FILE', metavar='FILE')
+parser.add_option("-t", "--sessions-directory", dest="sess_root_dir", default=os.environ['HOME']+'/.tmuxumt/sessions', help='write session related files under DIR', metavar='DIR')
 parser.add_option("-x", "--execute", dest="execute_commands", default=False, help='auto-execute previously running commands in panes', action='store_true')
 parser.add_option("-d", "--delay", dest="delay", default=0.0, help='delay between creating panes (in seconds)', type='float')
 (opts, args) = parser.parse_args()
 
+def get_session_name():
+    return opts.session if opts.session else server.cmd('display-message', '-p', '#S').stdout[0]
+
 if not args:
-    print('usage:')
-    print('tumuxum.py save FILENAME [SESSION]')
-    print('tumuxum.py load FILENAME [SESSION]')
+    parser.print_usage()
 
 elif args[0] == 'save':
-    fn = args[1]
-    sessname = args[2] if len(args) >= 3 else None
-
     server = libtmux.Server()
-    session = server.find_where({'session_name': sessname})
 
+    sessname = get_session_name()
     ts = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
-    sessdir = os.environ['HOME']+f'/.tmuxumt/sessions/{sessname}/{ts}'
+    sessdir = f'{opts.sess_root_dir}/{sessname}/{ts}'
+    fn = opts.filename if opts.filename else f'{sessdir}/session.yaml'
+
+    session = server.find_where({'session_name': sessname})
     os.makedirs(sessdir, exist_ok=True)
 
     def get_child(child, pane):
@@ -131,13 +136,24 @@ elif args[0] == 'save':
         'session_name': sessname,
         'windows': [get_window(w) for w in session.list_windows()],
     }
+
     with open(fn+'.tmp', 'w+') as f: yaml.dump(d, f)
     os.rename(fn+'.tmp', fn)
+    print(f'saved session {sessname!r} to file {fn}')
 
 elif args[0] == 'load':
-    fn = args[1]
-    sessname = args[2] if len(args) >= 3 else None
+    if not opts.session:
+        print('you must provide session name.')
+        sys.exit(1)
+    sessname = opts.session
+    sessdirs = sorted(glob.glob(f'{opts.sess_root_dir}/{sessname}/*'))
+    if not sessdirs:
+        print(f'cant find saved session {sessname!r}')
+        sys.exit(1)
+    sessdir = sessdirs[-1]
+    fn = opts.filename if opts.filename else f'{sessdir}/session.yaml'
 
+    print(f'loading session {sessname!r} from file {fn}')
     d = yaml.load(open(fn), Loader=yaml.FullLoader)
     if not sessname: sessname = d['session_name']
 
